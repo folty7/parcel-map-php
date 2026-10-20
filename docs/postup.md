@@ -41,7 +41,7 @@ viagem-parcely/
 ### Krok 1: Docker infraštruktúra (45 min)
 **Cieľ:** jeden príkaz spustí DB, PHP a nginx.
 - `docker-compose.yml` so službami:
-  - `db`: `postgis/postgis:16-3.4`, volume na dáta, healthcheck `pg_isready`, env z `.env`.
+  - `db`: `imresamu/postgis:17-3.5` (multi-arch build PostGIS image; oficiálny `postgis/postgis` je len amd64 a na Apple Silicon by bežal emulovane), volume na dáta, healthcheck `pg_isready`, env z `.env`.
   - `php`: build z `docker/php/Dockerfile`, volume `./backend:/app`, `depends_on: db (healthy)`.
   - `nginx`: `nginx:1.27-alpine`, port `8080:80`, volumes `./backend:/app`, `./frontend/dist:/srv/frontend`, config.
 - `docker/php/Dockerfile`: `FROM php:8.3-fpm`, `apt-get install -y libpq-dev gdal-bin unzip`, `docker-php-ext-install pdo_pgsql`, Composer skopírovaný z `composer:2` image.
