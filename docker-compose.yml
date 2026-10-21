@@ -20,6 +20,7 @@ services:
   php:
     build: docker/php
     environment:
+      APP_DEBUG: ${APP_DEBUG:-0}
       DB_HOST: db
       DB_PORT: 5432
       DB_NAME: ${DB_NAME:-parcely}
