@@ -1,5 +1,7 @@
 # Mapa parciel okresu Jičín – návrh riešenia
 
+Návrh zodpovedá výslednému riešeniu. Každé rozhodnutie aj s alternatívami je podrobne v [adr.md](adr.md), kroky implementácie v [postup.md](postup.md).
+
 ## 1. Čo ideme robiť a prečo
 
 ### 1.1 Biznis kontext
@@ -17,7 +19,7 @@ Naša aplikácia pokrýva **kroky 1–2** a pri kroku 3 pošle používateľa je
 **Prečo sú dôležité druh pozemku a výmera:** od nich priamo závisí cena a zaujímavosť pozemku pre výkup. Orná pôda sa oceňuje inak ako les a malé parcely bývajú pre výkup menej zaujímavé.
 
 ### 1.2 Čo konkrétne postavíme (jednou vetou)
-Webovú mapu celého okresu Jičín, kde vidieť všetky parcely (zafarbené podľa druhu pozemku) a po kliknutí na parcelu sa zobrazí jej číslo, katastrálne územie, výmera, druh a využitie a odkaz do katastra. Celé to beží plynulo vďaka vektorovým dlaždiciam generovaným v PHP z databázy PostGIS.
+Webovú mapu 5 katastrálnych území obce Jičín, kde vidieť všetky parcely (zafarbené podľa druhu pozemku) a po kliknutí na parcelu sa zobrazí jej číslo, katastrálne územie, výmera, druh a využitie a odkaz do katastra. Celé to beží plynulo vďaka vektorovým dlaždiciam generovaným v PHP z databázy PostGIS.
 
 ### 1.3 Slovník pojmov
 
@@ -80,32 +82,30 @@ Webovú mapu celého okresu Jičín, kde vidieť všetky parcely (zafarbené pod
 ---
 
 ## 2. Rozsah a podmienky
-- **Rozsah:** celý okres Jičín (minimum je KÚ Jičín + 3 ďalšie KÚ).
-- **Spúšťanie:** Docker Compose.
+- **Rozsah:** 5 KÚ obce Jičín (Jičín, Popovice u Jičína, Robousy, Moravčice, Hubálov), 16 950 parciel. Minimum zadania je KÚ Jičín + 3 ďalšie KÚ. Prečo nie celý okres, je v [ADR-0004](adr.md). Architektúra sa na celý okres dá rozšíriť bez prepisovania.
+- **Spúšťanie:** Docker Compose, lokálne netreba PHP ani Node.
 - **Backend:** čisté PHP 8.3, žiadny framework.
 - **Priority:** plynulosť a výkon, funkčnosť, čitateľný a štruktúrovaný PHP kód.
 
 ## 3. Architektúra
 
-```
-          PRÍPRAVA DÁT (raz, offline)                               RUNTIME
-┌──────────────────────────────────────────────┐   ┌───────────────────────────────────────────┐
-│ php bin/import  (PHP CLI)                    │   │ Prehliadač: React + react-map-gl/MapLibre │
-│  1. zoznam obcí okresu Jičín (ST_UZSZ)       │   │   ├─ podklad: OSM / Mapy.com / ortofoto   │
-│  2. stiahne OB_<kód>_UKSH.xml.zip (VFR)      │   │   ├─ vrstva parciel: MVT dlaždice         │
-│  3. ogr2ogr (GDAL) → staging tabuľky         │   │   └─ klik → /api/parcels/{id} → panel     │
-│  4. SQL: transformácia 5514→3857, indexy     │   └────────────────┬──────────────────────────┘
-└───────────────────────┬──────────────────────┘                    │ HTTP
-                        ▼                                           ▼
-               ┌──────────────────┐            ┌──────────────────────────────────────┐
-               │ PostGIS          │◄───────────│ nginx ──► php-fpm 8.3 (čisté PHP)    │
-               │ parcels,         │  ST_AsMVT  │  /tiles/{z}/{x}/{y}.pbf (+disk cache)│
-               │ cadastral_areas  │            │  /api/parcels/{id}, /api/search …    │
-               └──────────────────┘            │  nginx servuje aj frontend (dist/)   │
-                                               └──────────────────────────────────────┘
+```mermaid
+flowchart LR
+  subgraph Import["Príprava dát (raz, offline): bin/import.sh"]
+    VFR[(VFR OB_572659_UKSH.xml.zip)] -->|curl| ZIP[backend/var/data]
+    ZIP -->|ogr2ogr GDAL| STG[(staging)]
+    STG -->|codelists.sql + import.sql<br/>5514 → 3857, indexy| DB[(PostGIS<br/>parcels, cadastral_areas,<br/>land_types, land_uses)]
+  end
+  subgraph Runtime
+    B[Prehliadač<br/>index.html + MapLibre] -->|HTTP| N[nginx]
+    B -->|podklad| OSM[OpenStreetMap]
+    N -->|statický frontend| FE[frontend/]
+    N -->|FastCGI /tiles, /api| P[php-fpm 8.3, čisté PHP]
+    P -->|ST_AsMVT, SELECT| DB
+  end
 ```
 
-**Tok pri používaní:** prehliadač si pýta dlaždice podľa výrezu. nginx vráti hotovú z disk cache, inak ju PHP vygeneruje v PostGIS, uloží a vráti. Po kliknutí na parcelu frontend zoberie `id` z dlaždice a pýta detail z API.
+**Tok pri používaní:** prehliadač si pýta dlaždice podľa výrezu. Nginx ich pošle do PHP, ktoré ich vygeneruje v PostGIS (do 50 ms) a prehliadač si ich deň pamätá. Po kliknutí na parcelu frontend zoberie `id` z dlaždice a pýta detail z API.
 
 ---
 
@@ -115,7 +115,7 @@ Webovú mapu celého okresu Jičín, kde vidieť všetky parcely (zafarbené pod
 | | **A) Predom stiahnuť a importovať ✅** | B) Live dotazy na WFS ČÚZK |
 |---|---|---|
 | Prečo áno | Výkon nezávisí od ČÚZK. Vlastná DB umožní vlastné indexy, generalizáciu a dlaždice. Funguje offline. | Vždy aktuálne dáta; netreba DB ani import. |
-| Prečo nie | Dáta zostarnú (VFR vychádza mesačne), dá sa vyriešiť mesačným re-importom. Import zaberie pár minút. | WFS má limit prvkov na odpoveď a je pomalý, takže celý okres sa plynulo zobraziť nedá. To je v rozpore s hlavnou požiadavkou. Navyše výpadok ČÚZK znamená nefunkčnú aplikáciu. |
+| Prečo nie | Dáta zostarnú (VFR vychádza mesačne), dá sa vyriešiť mesačným re-importom. Import trvá pár sekúnd. | WFS má limit prvkov na odpoveď a je pomalý, takže celý okres sa plynulo zobraziť nedá. To je v rozpore s hlavnou požiadavkou. Navyše výpadok ČÚZK znamená nefunkčnú aplikáciu. |
 
 ### 2. Ktorý dataset ČÚZK?
 | | **A) RÚIAN VFR: súbory obcí `OB_<kód>_UKSH` ✅** | B) INSPIRE Cadastral Parcels (GML po KÚ) |
@@ -130,80 +130,88 @@ Webovú mapu celého okresu Jičín, kde vidieť všetky parcely (zafarbené pod
 | Prečo nie | Ďalšia služba, čo pri Dockeri nevadí. | Nevie generovať MVT, takže dlaždice by sa museli predgenerovať iným nástrojom. Rozšírenie sa v PHP zle nastavuje. |
 
 ### 4. Ako dostať geometrie do prehliadača (jadro výkonu)
-| | **A) Dynamické MVT z PostGIS cez PHP + disk cache ✅** | B) Predgenerovaný PMTiles súbor (tippecanoe), servovaný staticky |
+| | **A) Dynamické MVT z PostGIS cez PHP, cache len v prehliadači ✅** | B) Predgenerovaný PMTiles súbor (tippecanoe), servovaný staticky |
 |---|---|---|
-| Prečo áno | Logika ostáva v PHP backende. Generuje sa len to, kam sa niekto pozrie, a potom sa to cachuje. Zmena štýlu alebo atribútov nepotrebuje rebuild. Celý tile server má ~150 riadkov PHP. | Najrýchlejšie možné servovanie a triviálny runtime. |
-| Prečo nie | Prvá („studená“) dlaždica trvá desiatky ms. Rieši sa to cache a predhriatím nízkych zoomov. | Backend by nerobil takmer nič a logika by sa presunula do externého nástroja. Pribudne ďalší nástroj a pri každej zmene treba celý rebuild. |
+| Prečo áno | Logika ostáva v PHP backende. Generuje sa len to, kam sa niekto pozrie. Zmena štýlu alebo atribútov nepotrebuje rebuild. Celý tile server je jeden SQL dotaz a krátky controller. | Najrýchlejšie možné servovanie a triviálny runtime. |
+| Prečo nie | Každá nová dlaždica stojí dotaz do DB. Pri 5 KÚ je to 12 až 50 ms, takže disková cache by nepriniesla viditeľný rozdiel; pri celom okrese by sa vrátila do hry. | Backend by nerobil takmer nič a logika by sa presunula do externého nástroja. Pribudne ďalší nástroj a pri každej zmene treba celý rebuild. |
 
-Zamietnuté: **celý GeoJSON naraz**. Stovky MB do prehliadača by aplikáciu zabili.
+Zamietnuté: **celý GeoJSON naraz**. Niekoľko MB na úvod a parsovanie v prehliadači; pri celom okrese stovky MB.
 
-**Stratégia podľa zoomu:**
-- **z ≤ 11:** len hranice KÚ (+ neskôr choropleth). Celý okres je tak okamžite čitateľný.
-- **z 12–14:** parcely so zjednodušenou geometriou. Vynechajú sa tie, čo by mali menej ako ~1 px.
-- **z ≥ 15:** plné geometrie a od z 16 aj popisky parcelných čísel.
-- V dlaždici sú len `id`, `druh` a `cislo`. Ostatné atribúty sa načítajú až po kliknutí, aby dlaždice ostali malé.
+**Stratégia podľa zoomu ([ADR-0011](adr.md)):**
+- **Všetky zoomy:** hranice KÚ.
+- **z ≥ 10** (minimálny zoom mapy): parcely, geometria zjednodušená na 1 obrazovkový pixel. Celé územie sa zmestí do jednej dlaždice s 321 kB (157 kB gzip). Malé parcely sa nevynechávajú, aby v mape neboli diery.
+- **z 16:** posledný zoom, ktorý server generuje; vyššie zoomy MapLibre zväčší (overzoom).
+- V dlaždici sú len `id` a `land_type`. Ostatné atribúty sa načítajú až po kliknutí, aby dlaždice ostali malé.
 
 ### 5. Backend: čisté PHP, alebo framework?
 | | **A) Čisté PHP 8.3 + Composer (PSR-4 autoload), vlastný mini-router ✅** | B) Slim 4 / Symfony |
 |---|---|---|
-| Prečo áno | Malá aplikácia bez „mágie“: HTTP vrstva a štruktúra sú priamo v kóde a ľahko sa v nich orientuje. Využije moderné PHP: `strict_types`, readonly triedy, enumy. | Hotový routing, middleware a DI, menej boilerplate. |
+| Prečo áno | Malá aplikácia bez „mágie“: HTTP vrstva a štruktúra sú priamo v kóde a ľahko sa v nich orientuje. Využije moderné PHP: `strict_types`, readonly triedy, first-class callables. | Hotový routing, middleware a DI, menej boilerplate. |
 | Prečo nie | Router, error handling a JSON odpovede treba napísať ručne (~100 riadkov). | Framework pridá závislosti a konvencie, ktoré na pár endpointov nie sú potrebné. Symfony je na 4 endpointy zbytočne ťažké. |
 
 ### 6. Import dát (a čo je GDAL)
 **GDAL** (Geospatial Data Abstraction Library) je open-source knižnica a sada nástrojov, ktorá je „švajčiarsky nožík“ GIS sveta. Číta a zapisuje ~200 formátov priestorových dát (GML, Shapefile, GeoJSON, PostGIS…) a vie transformovať súradnicové systémy. Používa ju QGIS, PostGIS aj väčšina GIS softvéru. Jej nástroj **`ogr2ogr`** prevádza dáta z jedného formátu do druhého. U nás to bude jeden príkaz typu „zober tento VFR súbor a nalej vrstvu Parcely do tabuľky v PostGIS“. GDAL pozná štruktúru RÚIAN VFR, takže zložité GML nemusíme parsovať ručne.
 
-| | **A) PHP CLI riadi import, ťažkú prácu robí `ogr2ogr` ✅** | B) Vlastný streamovaný parser GML v PHP (XMLReader) |
+| | **A) Shell skript `bin/import.sh`: ťažkú prácu robí `ogr2ogr`, úpravy SQL ✅** | B) Vlastný streamovaný parser GML v PHP (XMLReader) |
 |---|---|---|
-| Prečo áno | Overený a rýchly nástroj. PHP rieši logiku: zoznam obcí, sťahovanie s opakovaním, spúšťanie ogr2ogr, SQL post-process a výpis priebehu. Hotové za ~2 h. | Viac PHP kódu na ukážku, žiadna závislosť navyše. |
-| Prečo nie | Závislosť na GDAL. V Dockeri je to len `apt-get install gdal-bin` v PHP image. | Parsovanie GML 3.2 geometrií (multipolygóny, diery, oblúky) je pracné a chybové. Na 4–12 h je to zlý obchod. |
+| Prečo áno | Overený a rýchly nástroj. Skript len stiahne súbor, spustí `ogr2ogr` do staging schémy a SQL, ktoré v jednej transakcii postaví tabuľky. Celý import trvá asi 2 s. | Viac PHP kódu na ukážku, žiadna závislosť navyše. |
+| Prečo nie | Závislosť na GDAL (v Dockeri je to `apt-get install gdal-bin` v PHP image) a na bashe na hoste. | Parsovanie GML 3.2 geometrií (multipolygóny, diery, oblúky) je pracné a chybové. Na 4–12 h je to zlý obchod. |
+
+Zvažovaný bol aj PHP CLI príkaz, ktorý by `ogr2ogr` riadil z PHP. Bol by to len obal okolo tých istých príkazov ([ADR-0006](adr.md)).
 
 ### 7. Mapová knižnica
 | | **A) MapLibre GL JS ✅** | B) Leaflet (+ VectorGrid) |
 |---|---|---|
-| Prečo áno | Kreslí cez WebGL na grafickej karte, takže desaťtisíce polygónov idú plynulo. Natívne MVT, zvýraznenie cez `feature-state`, farby podľa atribútu, bez API kľúča. | Najjednoduchšie API, veľa návodov. |
+| Prečo áno | Kreslí cez WebGL na grafickej karte, takže desaťtisíce polygónov idú plynulo. Natívne MVT, filtrovanie a zvýraznenie podľa `id` prvku, farby podľa atribútu, bez API kľúča. | Najjednoduchšie API, veľa návodov. |
 | Prečo nie | Štýlová špecifikácia (výrazy) sa chvíľu učí. | Kreslí cez Canvas/SVG v hlavnom vlákne, takže pri tisícoch polygónov seká. Výkon je pritom hlavné kritérium. |
 
 ### 8. Frontend: framework, alebo nie?
-**Kľúčový fakt:** na výkone mapy framework **prakticky nič nemení**. Mapu kreslí MapLibre cez WebGL, mimo React/Vue render cyklu. Framework riadi len panel, legendu a vyhľadávanie, teda pár desiatok DOM prvkov. Bundle je väčší o ~45 kB (gzip), čo je pri lokálnom behu zanedbateľné. Jediné reálne riziko je dávať mapové dáta do React stavu, čomu sa treba vyhnúť. Rozhoduje teda **boilerplate**, a pri bonusoch (legenda s filtrami, vyhľadávanie, multi-výber, export) ho framework výrazne uberie.
+**Kľúčový fakt:** na výkone mapy framework **prakticky nič nemení**. Mapu kreslí MapLibre cez WebGL, mimo React/Vue render cyklu. Framework by riadil len panel a legendu, teda pár desiatok DOM prvkov. Rozhoduje teda **boilerplate** a to, či spustenie potrebuje Node a build.
 
-| | **A) React + TypeScript + Vite + `react-map-gl/maplibre` ✅** | B) Vanilla TypeScript + Vite |
+| | **A) Jeden `frontend/index.html`, MapLibre z CDN, čisté JS ✅** | B) React + TypeScript + Vite + `react-map-gl/maplibre` |
 |---|---|---|
-| Prečo áno | Deklaratívne `<Map><Source><Layer/></Source></Map>`. Klik cez `interactiveLayerIds` + `onClick`. Stav (vybraná parcela, filtre) sa automaticky prejaví v paneli aj na mape. Najmenej kódu pri bonusoch a najrozšírenejší ekosystém. | Najmenší bundle a žiadna abstrakcia. |
-| Prečo nie | Treba si dať pozor, aby sa mapové dáta nedávali do React stavu (zbytočné prerendery). | Ručné prepájanie DOM a stavu (event listenery, prekresľovanie panela) rastie s každou feature a znamená viac boilerplate. |
+| Prečo áno | Žiadny build, `node_modules` ani Node na spustenie; nginx súbor servuje priamo. Pri jednej obrazovke s panelom a legendou je to približne 150 riadkov JS. | Deklaratívne `<Map><Source><Layer/></Source></Map>`, typy a komponenty. Najmenej kódu pri mnohých funkciách (vyhľadávanie, multi-výber, export). |
+| Prečo nie | Bez typov a komponentov, takže pri väčšom UI by sa súbor ťažko udržiaval. | Build krok, závislosti a ďalší kontajner alebo inštrukcie na spustenie. Pri jednej obrazovke je to viac boilerplate ako samotnej logiky. |
 
-(Vue 3 by bol rovnako dobrý, ale wrapper pre MapLibre je menej vyspelý ako `react-map-gl`.)
+Pri pribúdaní funkcií by sa oplatilo prejsť na Vite + TypeScript ([ADR-0013](adr.md)).
 
 ### 9. Mapový podklad
 **Výkon:** podklad sú v oboch prípadoch rastrové dlaždice z CDN, takže výkon je **prakticky rovnaký**.
 **Boilerplate:** Mapy.com cez REST API je v MapLibre **jedna URL**, rovnako ako OSM (`https://api.mapy.com/v1/maptiles/outdoor/256/{z}/{x}/{y}?apikey=…`). Starý Mapy.cz JS SDK (SMap) **nepoužijeme**, je to samostatná mapová knižnica, ktorá by nahradila MapLibre.
 **Kvalita:** Mapy.com má pre ČR lepšiu kartografiu (turistická mapa, poľné cesty, názvy tratí) a **vlastné letecké snímky do z 20**. Pre výkupcu je to reálne lepšie.
 
-| | **A) Konfigurovateľný podklad: Mapy.com (ak je v `.env` kľúč) s fallbackom na OSM + ČÚZK ortofoto ✅** | B) Len OSM + ČÚZK ortofoto |
+| | **A) OpenStreetMap ✅** | B) Mapy.com (ak je v `.env` kľúč) s fallbackom na OSM a prepínačom na ortofoto ČÚZK |
 |---|---|---|
-| Prečo áno | Najlepšia mapa pre ČR, keď je kľúč k dispozícii. Bez kľúča aplikácia stále funguje, takže na spustenie netreba nič registrovať. Prepínač podkladov pridáme aj tak. | Žiadna registrácia ani limity, menej konfigurácie. |
-| Prečo nie | Treba registráciu a dodržať atribúciu (logo Mapy.com). Free tarif má mesačný limit kreditov a kľúč je viditeľný vo frontende (dá sa obmedziť na doménu). | OSM je v ČR slabší v detailoch a ortofoto ČÚZK je len snímka bez názvov. |
+| Prečo áno | Žiadna registrácia, API kľúč ani konfigurácia, jedna URL v štýle mapy. Aplikáciu spustí ktokoľvek, aj spoločne na pohovore. | Najlepšia mapa pre ČR a letecké snímky, ktoré výkupcovi ukážu, čo na pozemku reálne je. |
+| Prečo nie | V ČR slabší v detailoch a tile server OSM nie je určený na produkčnú záťaž. | Treba registráciu a dodržať atribúciu (logo Mapy.com). Kľúč je viditeľný vo frontende a prepínač podkladov je ďalší kód. |
+
+Mapy.com, ortofoto a prekryv katastrálnej mapy (WMS ČÚZK) sú v zozname ďalších krokov ([ADR-0014](adr.md)).
 
 ### 10. Webserver
 | | **A) nginx + php-fpm ✅** | B) `php -S` (vstavaný server) |
 |---|---|---|
-| Prečo áno | Mapa naraz žiada 10–20 dlaždíc a php-fpm ich obslúži **paralelne**. nginx servuje cachované dlaždice a frontend bez PHP. | Nula konfigurácie. |
+| Prečo áno | Mapa naraz žiada 10–20 dlaždíc a php-fpm ich obslúži **paralelne**. nginx servuje frontend bez PHP a gzipuje dlaždice aj JSON. | Nula konfigurácie. |
 | Prečo nie | Pribudne kontajner a jeden nginx config. | Je **jednovláknový**, takže dlaždice by stáli v rade a mapa by sekala. Dobrá poznámka do zápisníka. |
 
 ---
 
 ## 5. Features
 
-**MVP (povinné)**
-1. Mapa celého okresu s plynulým zoomom a posunom (stratégia podľa zoomu).
-2. Klik na parcelu zvýrazní parcelu a otvorí bočný panel: KÚ (názov + kód), parcelné číslo, typ (stavebná/pozemková), výmera, druh pozemku, spôsob využitia, súradnice, odkaz na Nahlížení do KN a na Mapy.com.
+**Hotové**
+1. Mapa celého importovaného územia (5 KÚ) s plynulým zoomom a posunom, parcely viditeľné už pri úvodnom pohľade.
+2. Klik na parcelu ju zvýrazní a otvorí bočný panel (na mobile spodný): parcelné číslo (stavebné s „st.“), KÚ (názov + kód), obec, výmera (m², od 1 ha aj ha), druh pozemku, spôsob využitia a odkaz na Nahlížení do KN.
 3. README a zápisník.
 
-**Bonusy (v poradí priority)**
+**Hotové navyše**
 1. **Farba podľa druhu pozemku** + legenda s vypínaním druhov. Je to najrelevantnejšie pre výkup.
+
+**Ďalšie kroky (v poradí priority)**
+1. **Celý okres** (111 obcí) s agregovanými KÚ na malých zoomoch.
 2. **Vyhľadávanie**: KÚ + parcelné číslo (napr. „Jičín, 1234/5“), potom zoom na parcelu.
 3. **Permalink**: stav mapy a vybraná parcela v URL, dá sa poslať kolegovi.
 4. **Prepínač podkladov** (OSM / Mapy.com / ortofoto) + prekryv katastrálnej mapy (WMS ČÚZK).
 5. **Multi-výber** parciel so súčtom výmery a **exportom do CSV/GeoJSON**: „balík na výkup“.
-6. **Choropleth KÚ** na malých zoomoch (počet parciel, podiel ornej pôdy).
-7. **Tooltip** s číslom parcely pri prechode myšou.
+6. **BPEJ** (bonita pôdy) v detaile parcely.
+7. **Choropleth KÚ** na malých zoomoch (počet parciel, podiel ornej pôdy).
+8. **Tooltip** s číslom parcely pri prechode myšou.
 

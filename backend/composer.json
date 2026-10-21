@@ -1,6 +1,6 @@
 {
     "name": "viagem/parcely",
-    "description": "Map of land parcels in the Jičín district",
+    "description": "Map of land parcels in the Jičín municipality (5 cadastral areas)",
     "type": "project",
     "license": "proprietary",
     "require": {
