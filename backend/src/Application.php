@@ -6,6 +6,7 @@ namespace Viagem;
 
 use Throwable;
 use Viagem\Controller\HealthController;
+use Viagem\Controller\ParcelController;
 use Viagem\Controller\TileController;
 use Viagem\Http\ErrorHandler;
 use Viagem\Http\Request;
@@ -45,9 +46,11 @@ final readonly class Application
 
         $health = new HealthController($db);
         $tiles = new TileController($parcels);
+        $parcelDetail = new ParcelController($parcels);
 
         $router = new Router();
         $router->get('/api/health', $health->show(...));
+        $router->get('/api/parcels/{id:\d+}', $parcelDetail->show(...));
         $router->get('/tiles/{z:\d+}/{x:\d+}/{y:\d+}.pbf', $tiles->show(...));
 
         return $router;

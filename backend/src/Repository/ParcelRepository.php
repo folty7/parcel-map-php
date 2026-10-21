@@ -8,8 +8,11 @@ use PDO;
 
 final readonly class ParcelRepository
 {
-    /** Below this zoom the tile carries only cadastral area boundaries; parcels would be sub-pixel noise. */
-    private const int MIN_PARCEL_ZOOM = 12;
+    /**
+     * Below this zoom the tile carries only cadastral area boundaries. At z10 all 16 950 parcels fit one ~320 kB tile,
+     * so the whole imported territory is visible with parcels; a larger import would need a higher limit.
+     */
+    private const int MIN_PARCEL_ZOOM = 10;
 
     public function __construct(private PDO $db)
     {
@@ -53,5 +56,35 @@ final readonly class ParcelRepository
         $tile = $statement->fetchColumn();
 
         return is_resource($tile) ? (string) stream_get_contents($tile) : '';
+    }
+
+    /**
+     * @return array{
+     *     id: int, number: string, area_m2: int|null,
+     *     area_code: int, area_name: string, municipality: string,
+     *     land_type: int|null, land_type_name: string|null,
+     *     land_use: int|null, land_use_name: string|null,
+     * }|null
+     */
+    public function find(int $id): ?array
+    {
+        $statement = $this->db->prepare(<<<'SQL'
+            SELECT p.id, p.number, p.area_m2,
+                   a.code AS area_code, a.name AS area_name, a.municipality,
+                   p.land_type, t.name AS land_type_name,
+                   p.land_use, u.name AS land_use_name
+            FROM parcels p
+            JOIN cadastral_areas a ON a.code = p.area_code
+            LEFT JOIN land_types t ON t.code = p.land_type
+            LEFT JOIN land_uses u ON u.code = p.land_use
+            WHERE p.id = :id
+            SQL);
+        $statement->bindValue('id', $id, PDO::PARAM_INT);
+        $statement->execute();
+
+        /** @var array{id: int, number: string, area_m2: int|null, area_code: int, area_name: string, municipality: string, land_type: int|null, land_type_name: string|null, land_use: int|null, land_use_name: string|null}|false $row */
+        $row = $statement->fetch();
+
+        return $row === false ? null : $row;
     }
 }

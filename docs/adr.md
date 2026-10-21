@@ -101,7 +101,7 @@
 
 ## ADR-0010: Vektorové dlaždice generované z PostGIS pri každej požiadavke, bez diskovej cache
 - **Dátum:** 2026-10-21
-- **Stav:** Prijaté
+- **Stav:** Nahradené ADR-0012 (časť o minimálnom zoome parciel; zvyšok platí)
 - **Kontext:** Mapa musí ostať plynulá aj pri zobrazení celého územia (16 950 parciel v 5 KÚ).
 - **Zvažované možnosti:**
   - MVT cez `ST_AsMVT` pri každej požiadavke a cache len v prehliadači (`Cache-Control`): jeden SQL dotaz a žiadna invalidácia, ale každá nová dlaždica stojí jeden dotaz do DB.
@@ -109,3 +109,25 @@
   - Celé dáta ako jeden GeoJSON: najmenej kódu na serveri, ale niekoľko MB na úvod a parsovanie v prehliadači.
 - **Rozhodnutie:** MVT bez diskovej cache. Namerané časy generovania sú 12 až 45 ms na dlaždicu, takže cache by pri tomto rozsahu nepriniesla viditeľný rozdiel. Dlaždica má vrstvu `areas` (hranice KÚ) a od zoomu 12 aj vrstvu `parcels` s atribútmi `id` a `land_type`. Ostatné údaje prídu z API detailu. Geometria parciel je zjednodušená na toleranciu 1 obrazovkového pixela (`ST_Simplify`). Na z12 to zmenšilo dlaždicu zo 727 kB na 369 kB (so gzipom 212 kB). Server dlaždice generuje do zoomu 16, nad ním ich MapLibre zväčšuje.
 - **Dôsledky:** Nginx posiela `/api/` aj `/tiles/` rovno do PHP a gzipuje MVT. Pri rozšírení na celý okres treba meranie zopakovať: dlaždice na malých zoomoch by obsahovali násobne viac parciel, a potom sa disková cache alebo predgenerovanie (napr. PMTiles) vráti do hry. Na z12 tvorí väčšinu veľkosti samotný počet parciel, nie počet bodov. Ďalšie zmenšenie by vyžadovalo vynechať malé parcely, čo by v mape nechalo diery.
+
+## ADR-0011: Detail parcely ako typované pole z repozitára, bez doménových objektov
+- **Dátum:** 2026-10-21
+- **Stav:** Prijaté
+- **Kontext:** `GET /api/parcels/{id}` vracia jednu parcelu s názvami KÚ, druhu pozemku a spôsobu využitia.
+- **Zvažované možnosti:**
+  - Repozitár vráti riadok ako pole s PHPStan array shape a controller z neho poskladá JSON: najmenej kódu a PHPStan na leveli 8 aj tak kontroluje kľúče a typy, ale tvar dát nie je samostatná trieda.
+  - Readonly DTO `Parcel` s `toArray()`: explicitný typ, ale ďalšia trieda, ktorá len prekladá stĺpce na vlastnosti.
+  - Vrátiť riadok z DB priamo ako JSON: najkratšie, ale API by prebralo názvy stĺpcov a zmena schémy by rozbila klienta.
+- **Rozhodnutie:** Array shape v `ParcelRepository::find()` a tvar JSON v `ParcelController`. Číslo parcely (`st. 677/3`) je predpočítané pri importe a názvy kódov prídu z JOIN na číselníky (ADR-0009), takže doménové objekty by neniesli žiadnu logiku.
+- **Dôsledky:** API má vlastné názvy kľúčov (`areaM2`, `cadastralArea`, `landType`) oddelené od stĺpcov. Ak pribudne logika nad parcelou (napr. výpočty pre výkup alebo BPEJ), bude dávať zmysel zaviesť DTO. Neznámy kód z číselníka vráti `name: null`. ID väčšie ako `PHP_INT_MAX` vráti 404.
+
+## ADR-0012: Frontend ako jeden HTML súbor s MapLibre z CDN, parcely od zoomu 10
+- **Dátum:** 2026-10-21
+- **Stav:** Prijaté
+- **Kontext:** Frontend má zobraziť vektorové dlaždice, po kliknutí detail parcely a legendu druhov pozemku. Vite + React + TypeScript by si vyžiadal Node, build krok a kontajner alebo inštrukcie navyše. Pri teste v malom okne sa celé územie zmestilo až na zoom 11, no parcely sa zobrazovali od zoomu 12, takže úvodný pohľad ukazoval len hranice KÚ.
+- **Zvažované možnosti:**
+  - Jeden `frontend/index.html` s MapLibre GL 4.7.1 z unpkg a čistým JS: žiadny build ani `node_modules` a nginx ho servuje priamo, ale bez typov a komponentov, takže pri väčšom UI by sa súbor ťažko udržiaval.
+  - Vite + React + TS: typy a komponenty, ale build, závislosti a viac boilerplate pre jednu obrazovku.
+  - Leaflet s pluginom na vektorové dlaždice: jednoduché API, ale MVT podporuje len cez plugin a rendering cez Canvas/SVG je pri tisícoch polygónov pomalší ako WebGL v MapLibre.
+- **Rozhodnutie:** Jeden HTML súbor s MapLibre. Podklad je OSM raster. Parcely sú zafarbené podľa `land_type` (farby a názvy v jednom poli `LAND_TYPES`, z ktorého sa skladá štýl aj legenda) a legenda vie jednotlivé druhy vypnúť cez `setFilter`. Klik načíta `/api/parcels/{id}`, predchádzajúci request zruší (`AbortController`) a vybranú parcelu zvýrazní filtrom na `id`. Text v paneli sa vkladá cez `textContent`. `MIN_PARCEL_ZOOM` sme znížili z 12 na 10 (minimálny zoom mapy): na z10 je všetkých 16 950 parciel v jednej dlaždici s 321 kB, na z11 je najväčšia dlaždica 411 kB. Nahrádza to časť ADR-0010 o zoome.
+- **Dôsledky:** Spustenie nepotrebuje Node a v `docker-compose.yml` sa namiesto `frontend/dist` pripája priamo `frontend/`. Aplikácia závisí od unpkg a OSM dlaždíc (online). OSM tile server nie je určený na produkčnú záťaž, na produkciu by bol potrebný vlastný podklad alebo Mapy.com s API kľúčom. Pri rozšírení na celý okres treba `MIN_PARCEL_ZOOM` zvýšiť alebo na malých zoomoch zobraziť agregované KÚ.
