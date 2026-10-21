@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="cs">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Parcely Jičín</title>
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+    <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+    <style>
+        * { box-sizing: border-box; }
+        html, body { margin: 0; height: 100%; font: 14px/1.4 system-ui, sans-serif; color: #1f2328; }
+        #map { position: absolute; inset: 0; }
+
+        .card {
+            position: absolute; z-index: 1; background: #fff; border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, .2);
+        }
+
+        #panel { top: 12px; right: 12px; width: 320px; max-height: calc(100% - 24px); overflow: auto; padding: 16px; }
+        #panel[hidden] { display: none; }
+        #panel h2 { margin: 0 32px 4px 0; font-size: 20px; }
+        #panel .subtitle { margin: 0 0 12px; color: #59636e; }
+        #panel dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 0 0 12px; }
+        #panel dt { color: #59636e; }
+        #panel dd { margin: 0; }
+        #close { position: absolute; top: 8px; right: 8px; border: 0; background: none; font-size: 22px; cursor: pointer; }
+
+        #legend { bottom: 28px; left: 12px; padding: 10px 12px; }
+        #legend h3 { margin: 0 0 6px; font-size: 13px; }
+        #legend label { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+        #legend .swatch { width: 14px; height: 14px; border-radius: 3px; border: 1px solid rgba(0, 0, 0, .25); }
+
+        @media (max-width: 600px) {
+            #panel { top: auto; bottom: 0; right: 0; left: 0; width: auto; max-height: 50%; border-radius: 8px 8px 0 0; }
+            #legend { top: 12px; bottom: auto; }
+        }
+    </style>
+</head>
+<body>
+<div id="map"></div>
+
+<aside id="panel" class="card" hidden>
+    <button id="close" type="button" aria-label="Zavřít">×</button>
+    <div id="panel-body"></div>
+</aside>
+
+<div id="legend" class="card">
+    <h3>Druh pozemku</h3>
+</div>
+
+<script>
+    // Land types (RÚIAN code list ST_UCIS); one entry can cover several codes (TTP is 7 and 8).
+    const LAND_TYPES = [
+        { codes: [2], name: 'orná půda', color: '#f2d16b' },
+        { codes: [5], name: 'zahrada', color: '#a8d98b' },
+        { codes: [6], name: 'ovocný sad', color: '#6fb35a' },
+        { codes: [7, 8], name: 'trvalý travní porost', color: '#d4ecb0' },
+        { codes: [10], name: 'lesní pozemek', color: '#2e7d32' },
+        { codes: [11], name: 'vodní plocha', color: '#5aa9e6' },
+        { codes: [13], name: 'zastavěná plocha a nádvoří', color: '#e57373' },
+        { codes: [14], name: 'ostatní plocha', color: '#bcaaa4' },
+    ];
+    const OTHER_COLOR = '#9e9e9e';
+
+    const map = new maplibregl.Map({
+        container: 'map',
+        bounds: [[15.328, 50.396], [15.428, 50.460]], // catastral areas of the Jičín municipality
+        fitBoundsOptions: { padding: 20 },
+        maxBounds: [[15.15, 50.30], [15.60, 50.55]],
+        minZoom: 10,
+        maxZoom: 20,
+        style: {
+            version: 8,
+            sources: {
+                osm: {
+                    type: 'raster',
+                    tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+                    tileSize: 256,
+                    maxzoom: 19,
+                    attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+                },
+                cadastre: {
+                    type: 'vector',
+                    tiles: [`${location.origin}/tiles/{z}/{x}/{y}.pbf`],
+                    minzoom: 10,
+                    maxzoom: 16, // the server renders up to z16, MapLibre overzooms beyond
+                    attribution: 'Data © <a href="https://www.cuzk.cz">ČÚZK</a>',
+                },
+            },
+            layers: [
+                { id: 'osm', type: 'raster', source: 'osm' },
+                {
+                    id: 'parcels-fill', type: 'fill', source: 'cadastre', 'source-layer': 'parcels',
+                    paint: {
+                        'fill-color': [
+                            'match', ['get', 'land_type'],
+                            ...LAND_TYPES.flatMap(t => [t.codes, t.color]),
+                            OTHER_COLOR,
+                        ],
+                        'fill-opacity': ['interpolate', ['linear'], ['zoom'], 12, 0.75, 17, 0.45],
+                    },
+                },
+                {
+                    id: 'parcels-line', type: 'line', source: 'cadastre', 'source-layer': 'parcels', minzoom: 14,
+                    paint: {
+                        'line-color': '#5d4037',
+                        'line-width': ['interpolate', ['linear'], ['zoom'], 14, 0.2, 18, 1],
+                    },
+                },
+                {
+                    id: 'areas-line', type: 'line', source: 'cadastre', 'source-layer': 'areas',
+                    paint: { 'line-color': '#4a148c', 'line-width': 2, 'line-dasharray': [3, 2] },
+                },
+                {
+                    id: 'parcel-selected', type: 'line', source: 'cadastre', 'source-layer': 'parcels',
+                    filter: ['==', ['id'], -1],
+                    paint: { 'line-color': '#0d47a1', 'line-width': 3 },
+                },
+            ],
+        },
+    });
+    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-left'); // the right side is the panel's
+    map.addControl(new maplibregl.ScaleControl());
+
+    // --- Legend: each land type can be switched off ---
+
+    const enabledCodes = new Set(LAND_TYPES.flatMap(t => t.codes));
+    const legend = document.getElementById('legend');
+
+    for (const type of LAND_TYPES) {
+        const label = document.createElement('label');
+        label.innerHTML = '<input type="checkbox" checked><span class="swatch"></span><span></span>';
+        label.querySelector('.swatch').style.background = type.color;
+        label.lastElementChild.textContent = type.name;
+        label.querySelector('input').addEventListener('change', e => {
+            type.codes.forEach(c => e.target.checked ? enabledCodes.add(c) : enabledCodes.delete(c));
+            const filter = ['in', ['get', 'land_type'], ['literal', [...enabledCodes]]];
+            map.setFilter('parcels-fill', filter);
+            map.setFilter('parcels-line', filter);
+        });
+        legend.append(label);
+    }
+
+    // --- Parcel detail ---
+
+    const panel = document.getElementById('panel');
+    const panelBody = document.getElementById('panel-body');
+    let pendingRequest = null;
+
+    map.on('click', 'parcels-fill', e => selectParcel(e.features[0].id));
+    map.on('mouseenter', 'parcels-fill', () => map.getCanvas().style.cursor = 'pointer');
+    map.on('mouseleave', 'parcels-fill', () => map.getCanvas().style.cursor = '');
+    document.getElementById('close').addEventListener('click', () => selectParcel(null));
+
+    async function selectParcel(id) {
+        pendingRequest?.abort(); // fast clicking: only the last parcel wins
+        map.setFilter('parcel-selected', ['==', ['id'], id ?? -1]);
+        panel.hidden = id === null;
+        if (id === null) return;
+
+        pendingRequest = new AbortController();
+        panelBody.textContent = 'Načítám…';
+        try {
+            const response = await fetch(`/api/parcels/${id}`, { signal: pendingRequest.signal });
+            if (!response.ok) throw new Error((await response.json()).error ?? response.statusText);
+            renderParcel(await response.json());
+        } catch (error) {
+            if (error.name !== 'AbortError') panelBody.textContent = `Chyba: ${error.message}`;
+        }
+    }
+
+    function renderParcel(p) {
+        const rows = [
+            ['Katastrální území', `${p.cadastralArea.name} (${p.cadastralArea.code})`],
+            ['Obec', p.municipality],
+            ['Výměra', p.areaM2 === null ? '–' : formatArea(p.areaM2)],
+            ['Druh pozemku', p.landType?.name ?? '–'],
+            ['Způsob využití', p.landUse?.name ?? '–'],
+        ];
+
+        const title = document.createElement('h2');
+        title.textContent = `Parcela ${p.number}`;
+        const subtitle = document.createElement('p');
+        subtitle.className = 'subtitle';
+        subtitle.textContent = `k. ú. ${p.cadastralArea.name}`;
+
+        const list = document.createElement('dl');
+        for (const [label, value] of rows) {
+            const dt = document.createElement('dt');
+            const dd = document.createElement('dd');
+            dt.textContent = label;
+            dd.textContent = value;
+            list.append(dt, dd);
+        }
+
+        const link = document.createElement('a');
+        link.href = p.links.nahlizeniDoKn;
+        link.target = '_blank';
+        link.rel = 'noopener';
+        link.textContent = 'Otevřít v Nahlížení do KN ↗';
+
+        panelBody.replaceChildren(title, subtitle, list, link);
+    }
+
+    function formatArea(m2) {
+        const text = `${m2.toLocaleString('cs-CZ')} m²`;
+        return m2 >= 10000 ? `${text} (${(m2 / 10000).toLocaleString('cs-CZ', { maximumFractionDigits: 2 })} ha)` : text;
+    }
+</script>
+</body>
+</html>
