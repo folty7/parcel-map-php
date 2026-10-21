@@ -2,7 +2,7 @@
 
 Webová aplikácia, ktorá zobrazí parcely na mape a po kliknutí na parcelu ukáže jej detail: číslo, katastrálne územie, výmeru, druh pozemku, spôsob využitia a odkaz do Nahlížení do KN.
 
-**Rozsah:** 5 katastrálnych území obce Jičín (Jičín, Popovice u Jičína, Robousy, Moravčice, Hubálov), spolu 16 950 parciel. Zadanie vyžaduje KÚ Jičín a aspoň 3 ďalšie. Prečo nie celý okres, je opísané v [ADR-0004](docs/adr.md#adr-0004-rozsah-5-katastrálnych-území-obce-jičín).
+**Rozsah:** 5 katastrálnych území obce Jičín (Jičín, Popovice u Jičína, Robousy, Moravčice, Hubálov), spolu 16 950 parciel.
 
 Navyše oproti zadaniu: parcely sú zafarbené podľa druhu pozemku, legenda vie jednotlivé druhy vypnúť a detail obsahuje priamy odkaz do Nahlížení do KN.
 
